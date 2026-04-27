@@ -1,42 +1,101 @@
-# URL Shortener
+# Serverless URL Shortener
 
-A small serverless URL shortener built with AWS Lambda, DynamoDB, API Gateway, IAM, and CloudWatch.
+A simple URL shortener built on AWS using API Gateway, Lambda, DynamoDB, IAM, and CloudWatch.
 
-Send a long URL to the shorten endpoint and get back a compact short link. When someone opens the short link, API Gateway invokes the redirect Lambda, looks up the original URL in DynamoDB, and redirects the user with an HTTP `301`.
+The project accepts a long URL, stores it in DynamoDB with a generated short code, and redirects users to the original URL when they visit the short link.
 
-![Architecture diagram](architecture.jpeg)
+![Architecture Diagram](architecture.jpeg)
 
-## What It Does
+## Features
 
-- Accepts a long URL and returns a short link such as `yourdomain/rv0phj`
-- Stores `shortCode -> longUrl` mappings in DynamoDB
-- Redirects short-link visitors to the original URL using HTTP `301`
-- Tracks a simple click count for each short code
-- Logs Lambda invocations through CloudWatch
+- Create short URLs from long URLs
+- Redirect short URLs using HTTP `301`
+- Store URL mappings in DynamoDB
+- Track basic click counts
+- Use IAM least-privilege access for DynamoDB operations
+- Log Lambda execution through CloudWatch
+
+## Tech Stack
+
+| Service / Tool | Purpose |
+| --- | --- |
+| AWS Lambda | Runs the URL shortening and redirect logic |
+| Amazon DynamoDB | Stores `shortCode`, `longUrl`, `createdAt`, and `clicks` |
+| Amazon API Gateway | Exposes public HTTP endpoints |
+| IAM | Controls Lambda permissions to DynamoDB |
+| CloudWatch | Stores Lambda logs |
+| Python | Lambda function runtime |
+
+## Repository Structure
+
+```text
+.
+├── architecture.jpeg      # Architecture diagram
+├── dynamo-policy.json     # IAM policy for DynamoDB access
+├── redirect.py            # Lambda function for redirecting short URLs
+├── shorten.py             # Lambda function for creating short URLs
+├── test-shorten.json      # Sample Lambda test payload
+└── README.md              # Project documentation
+```
 
 ## Architecture
 
-- **API Gateway** exposes public HTTP endpoints for shortening and redirecting.
-- **AWS Lambda** runs two Python functions:
-  - `shorten.py` creates a random short code and stores the mapping.
-  - `redirect.py` looks up the short code and returns a redirect response.
-- **DynamoDB** stores URL mappings using `shortCode` as the lookup key.
-- **IAM** grants the Lambda functions only the DynamoDB permissions they need.
-- **CloudWatch** captures logs for debugging and observability.
+```text
+Client
+  |
+  v
+API Gateway
+  |
+  +--> shorten Lambda  --> DynamoDB
+  |
+  +--> redirect Lambda --> DynamoDB --> HTTP 301 redirect
+```
 
-## Access Pattern
+### Request Flow
 
-The main access pattern is simple and fast:
+1. A client sends a long URL to the shorten endpoint.
+2. API Gateway invokes the `shorten.py` Lambda function.
+3. Lambda generates a 6-character short code.
+4. The mapping is saved in DynamoDB.
+5. When a user opens the short URL, API Gateway invokes `redirect.py`.
+6. Lambda retrieves the original URL from DynamoDB.
+7. Lambda returns an HTTP `301` redirect with the original URL in the `Location` header.
 
-1. Write a new item by `shortCode` when a URL is shortened.
-2. Read an item by `shortCode` when a short link is visited.
-3. Update the `clicks` count after a successful lookup.
+## DynamoDB Table Design
 
-This keeps the DynamoDB table design focused on the exact queries the application needs.
+Table name used in the Lambda functions:
 
-## API Behavior
+```text
+url-shortener
+```
 
-### Create a Short URL
+Primary key:
+
+| Attribute | Type | Description |
+| --- | --- | --- |
+| `shortCode` | String | Unique code used in the short URL |
+
+Stored item example:
+
+```json
+{
+  "shortCode": "rv0phj",
+  "longUrl": "https://www.google.com",
+  "createdAt": "2026-04-20T10:30:00",
+  "clicks": 0
+}
+```
+
+## API Endpoints
+
+The exact API Gateway URL depends on your AWS deployment.
+
+### Create Short URL
+
+```http
+POST /shorten
+Content-Type: application/json
+```
 
 Request body:
 
@@ -56,40 +115,104 @@ Example response:
 }
 ```
 
-### Redirect
+### Redirect Short URL
 
-When a user visits:
-
-```text
+```http
 GET /{shortCode}
 ```
 
-The redirect Lambda:
-
-1. Reads `{shortCode}` from the path.
-2. Looks up the original URL in DynamoDB.
-3. Increments the click count.
-4. Returns:
+Successful response:
 
 ```http
 HTTP/1.1 301 Moved Permanently
-Location: https://original-long-url.com
+Location: https://www.google.com
 ```
 
-If the short code does not exist, it returns `404`.
+If the short code is not found:
 
-## Files
+```json
+{
+  "error": "Short URL not found"
+}
+```
 
-- `shorten.py` - Lambda handler for creating short URLs
-- `redirect.py` - Lambda handler for redirecting short URLs
-- `dynamo-policy.json` - IAM policy for DynamoDB access
-- `test-shorten.json` - sample test payload for the shorten Lambda
-- `architecture.jpeg` - project architecture diagram
+## Lambda Functions
 
-## What I Learned
+### `shorten.py`
 
-- Design access patterns before writing code.
-- Build in layers: storage first, code second, expose third.
-- Least privilege is not optional; it is the foundation.
-- `301` vs `302` is a product decision, not just a technical detail.
+Responsible for creating short URLs.
+
+Main steps:
+
+1. Read `longUrl` from the request body.
+2. Generate a random 6-character short code.
+3. Store the mapping in DynamoDB.
+4. Return the generated short URL details.
+
+Required DynamoDB permission:
+
+```text
+dynamodb:PutItem
+```
+
+### `redirect.py`
+
+Responsible for redirecting users.
+
+Main steps:
+
+1. Read `shortCode` from the path parameter.
+2. Fetch the matching item from DynamoDB.
+3. Return `404` if the short code does not exist.
+4. Increment the click count.
+5. Return an HTTP `301` redirect.
+
+Required DynamoDB permissions:
+
+```text
+dynamodb:GetItem
+dynamodb:UpdateItem
+```
+
+## IAM Policy
+
+The included `dynamo-policy.json` grants Lambda access to only the DynamoDB actions required by this project:
+
+```json
+[
+  "dynamodb:PutItem",
+  "dynamodb:GetItem",
+  "dynamodb:UpdateItem"
+]
+```
+
+Update the DynamoDB table ARN in `dynamo-policy.json` if you deploy this project in a different AWS account, region, or table name.
+
+## Deployment Notes
+
+This repository contains the Lambda source code and IAM policy. The AWS resources can be created manually from the AWS Console or automated later with infrastructure as code.
+
+Basic deployment order:
+
+1. Create a DynamoDB table named `url-shortener` with `shortCode` as the partition key.
+2. Create an IAM role for the Lambda functions.
+3. Attach the DynamoDB policy from `dynamo-policy.json`.
+4. Create two Python Lambda functions:
+   - `shorten.py`
+   - `redirect.py`
+5. Connect both Lambda functions to API Gateway routes.
+6. Test the shorten endpoint with `test-shorten.json`.
+7. Open a generated short URL and confirm it returns a `301` redirect.
+
+## Local Files Not Committed
+
+Generated deployment packages and output files are ignored by Git:
+
+```text
+*.zip
+*-output.json
+output.json
+```
+
+These files can be recreated when packaging or testing the Lambda functions.
 
