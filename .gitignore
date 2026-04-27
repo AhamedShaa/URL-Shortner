@@ -1,0 +1,9 @@
+*.zip
+*-output.json
+output.json
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+.env
+.DS_Store
